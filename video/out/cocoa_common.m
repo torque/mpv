@@ -20,6 +20,8 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreServices/CoreServices.h> // for CGDisplayHideCursor
 #import <IOKit/pwr_mgt/IOPMLib.h>
+#import <IOKit/IOKitLib.h>
+#include <mach/mach.h>
 
 #import "cocoa_common.h"
 #import "video/out/cocoa/window.h"
@@ -73,6 +75,9 @@ struct vo_cocoa_state {
     bool embedded; // wether we are embedding in another GUI
 
     IOPMAssertionID power_mgmt_assertion;
+    io_connect_t light_sensor;
+    uint64_t last_lmuvalue;
+    int last_lux;
 
     pthread_mutex_t mutex;
     struct mp_log *log;
@@ -146,6 +151,64 @@ static void set_application_icon(NSApplication *app)
     [pool release];
 }
 
+static void cocoa_init_light_sensor(struct vo *vo)
+{
+    with_cocoa_lock_on_main_thread(vo, ^{
+        struct vo_cocoa_state *s = vo->cocoa;
+        io_service_t srv = IOServiceGetMatchingService(
+                kIOMasterPortDefault, IOServiceMatching("AppleLMUController"));
+        if (srv == IO_OBJECT_NULL) {
+            MP_VERBOSE(vo, "can't find an ambient light sensor\n");
+            return;
+        }
+        kern_return_t kr = IOServiceOpen(srv, mach_task_self(), 0, &s->light_sensor);
+        IOObjectRelease(srv);
+        if (kr != KERN_SUCCESS) {
+            MP_WARN(vo, "can't start ambient light sensor connection\n");
+            return;
+        }
+    });
+}
+
+static int lmuvalue_to_lux(uint64_t v)
+{
+    // the polinomial approximation for apple lmu value -> lux was empirically
+    // derived by firefox developers (Apple provides no documentation).
+    // https://bugzilla.mozilla.org/show_bug.cgi?id=793728
+    long double power_c4 = 1/pow((long double)10,27);
+    long double power_c3 = 1/pow((long double)10,19);
+    long double power_c2 = 1/pow((long double)10,12);
+    long double power_c1 = 1/pow((long double)10,5);
+
+    long double term4 = -3.0 * power_c4 * pow(v,4);
+    long double term3 =  2.6 * power_c3 * pow(v,3);
+    long double term2 = -3.4 * power_c2 * pow(v,2);
+    long double term1 =  3.9 * power_c1 * v;
+
+    int lux = ceil((float)(term4 + term3 + term2 + term1 - 0.19));
+    return lux > 0 ? lux : 0;
+}
+
+static void cocoa_read_light_sensor_data(struct vo *vo)
+{
+    struct vo_cocoa_state *s = vo->cocoa;
+    uint32_t outputs = 2;
+    uint64_t values[outputs];
+
+    kern_return_t kr = IOConnectCallMethod(
+            s->light_sensor, 0, NULL, 0, NULL, 0, values, &outputs, nil, 0);
+
+    if (kr == KERN_SUCCESS) {
+        uint64_t mean = (values[0] + values[1]) / 2;
+        if (s->last_lmuvalue != mean) {
+            s->last_lmuvalue = mean;
+            s->last_lux = lmuvalue_to_lux(s->last_lmuvalue);
+            s->pending_events |= VO_EVENT_AMBIENT_LIGHTING_CHANGED;
+            return;
+        }
+    }
+}
+
 int vo_cocoa_init(struct vo *vo)
 {
     struct vo_cocoa_state *s = talloc_zero(vo, struct vo_cocoa_state);
@@ -156,6 +219,7 @@ int vo_cocoa_init(struct vo *vo)
         .embedded = vo->opts->WinID >= 0,
     };
     mpthread_mutex_init_recursive(&s->mutex);
+    cocoa_init_light_sensor(vo);
     vo->cocoa = s;
     return 1;
 }
@@ -199,6 +263,7 @@ void vo_cocoa_uninit(struct vo *vo)
 
     with_cocoa_lock_on_main_thread(vo, ^{
         enable_power_management(vo);
+        IOObjectRelease(s->light_sensor);
         cocoa_rm_fs_screen_profile_observer(vo);
 
         [s->gl_ctx release];
@@ -578,6 +643,8 @@ int vo_cocoa_check_events(struct vo *vo)
     int events = s->pending_events;
     s->pending_events = 0;
 
+    cocoa_read_light_sensor_data(vo);
+
     if (events & VO_EVENT_RESIZE) {
         resize_window(vo);
     }
@@ -678,6 +745,11 @@ int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
     case VOCTRL_GET_DISPLAY_FPS:
         if (vo->cocoa->screen_fps > 0.0) {
             *(double *)arg = vo->cocoa->screen_fps;
+            return VO_TRUE;
+        }
+    case VOCTRL_GET_AMBIENT_LUX:
+        if (vo->cocoa->light_sensor != IO_OBJECT_NULL) {
+            *(int *)arg = vo->cocoa->last_lux;
             return VO_TRUE;
         }
     }
