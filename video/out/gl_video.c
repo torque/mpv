@@ -355,6 +355,7 @@ static int validate_scaler_opt(struct mp_log *log, const m_option_t *opt,
 const struct m_sub_options gl_video_conf = {
     .opts = (const m_option_t[]) {
         OPT_FLOATRANGE("gamma", gamma, 0, 0.1, 2.0),
+        OPT_FLAG("gamma-auto", gamma_auto, 0),
         OPT_FLAG("srgb", srgb, 0),
         OPT_FLAG("npot", npot, 0),
         OPT_FLAG("pbo", pbo, 0),
@@ -2528,6 +2529,17 @@ void gl_video_resize_redraw(struct gl_video *p, int w, int h)
     p->vp_w = w;
     p->vp_h = h;
     gl_video_render_frame(p, 0, NULL);
+}
+
+void gl_video_set_ambient_lux(struct gl_video *p, int lux)
+{
+    if (p->opts.gamma_auto) {
+        float target_gamma = MPMIN(2.40, 2.7 - log10(lux) / 5.0);
+        float gamma = p->opts.gamma = MPMIN(1.0, 1.961 / target_gamma);
+        MP_INFO(p, "ambient light changed: %dlux (gamma: %f)\n", lux, gamma);
+        p->opts.gamma = gamma;
+        gl_video_eq_update(p);
+    }
 }
 
 void gl_video_set_hwdec(struct gl_video *p, struct gl_hwdec *hwdec)
