@@ -2531,13 +2531,23 @@ void gl_video_resize_redraw(struct gl_video *p, int w, int h)
     gl_video_render_frame(p, 0, NULL);
 }
 
+static void gl_get_lux_coeff(float min, float max, float c[2])
+{
+    float y = (log10(max) - log10(min)) / (2.40 - 1.961);
+    float x = 2.40 + log10(min) / y;
+    c[0] = x;
+    c[1] = y;
+}
+
 void gl_video_set_ambient_lux(struct gl_video *p, int lux)
 {
     if (p->opts.gamma_auto) {
-        float target_gamma = MPMIN(2.40, 2.7 - log10(lux) / 5.0);
-        float gamma = p->opts.gamma = MPMIN(1.0, 1.961 / target_gamma);
+        float c[2];
+        gl_get_lux_coeff(30.0, 300.0, c);
+        float gamma = c[0] - log10(lux) / c[1];
+        gamma = MPMIN(2.40, MPMAX(1.961, gamma));
         MP_INFO(p, "ambient light changed: %dlux (gamma: %f)\n", lux, gamma);
-        p->opts.gamma = gamma;
+        p->opts.gamma = MPMIN(1.0, 1.961 / gamma);
         gl_video_eq_update(p);
     }
 }
