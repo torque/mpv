@@ -33,7 +33,10 @@ typedef struct demux_packet {
     unsigned char *buffer;
     bool keyframe;
     int stream; // source stream index
+    // for free use by the packet-owner, undefined otherwise
     struct demux_packet *next;
+    uint64_t id;
+    // internal
     struct AVPacket *avpacket;   // keep the buffer allocation
 } demux_packet_t;
 

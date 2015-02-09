@@ -153,7 +153,9 @@ struct demux_stream {
     size_t last_br_bytes;   // summed packet sizes since last bitrate calculation
     double bitrate;
     int64_t total_read;
-    int64_t last_pos;
+    int64_t prev_pos;
+    int64_t prev_id;
+    uint64_t last_id;
     struct demux_packet *head;
     struct demux_packet *tail;
 };
@@ -187,6 +189,8 @@ static void ds_flush(struct demux_stream *ds)
     ds->active = false;
     ds->total_read = 0;
     ds->refreshing = false;
+    ds->prev_pos = 0;
+    ds->prev_id = 0;
 }
 
 struct sh_stream *new_sh_stream(demuxer_t *demuxer, enum stream_type type)
@@ -306,10 +310,19 @@ int demux_add_packet(struct sh_stream *stream, demux_packet_t *dp)
     struct demux_internal *in = ds->in;
     pthread_mutex_lock(&in->lock);
 
+
+    if (dp->pos == ds->prev_pos) {
+        dp->id = ds->prev_id + 1;
+    } else {
+        dp->id = dp->pos;
+    }
+    ds->prev_pos = dp->pos;
+    ds->prev_id = dp->id;
+
     bool drop = false;
     if (ds->refreshing) {
         drop = true;
-        if (dp->pos == ds->last_pos)
+        if (dp->id == ds->last_id)
             ds->refreshing = false;
     }
 
@@ -323,7 +336,7 @@ int demux_add_packet(struct sh_stream *stream, demux_packet_t *dp)
     dp->next = NULL;
 
     ds->total_read++;
-    ds->last_pos = dp->pos;
+    ds->last_id = dp->id;
 
     ds->packs++;
     ds->bytes += dp->len;
@@ -504,8 +517,11 @@ static void execute_refresh(struct demux_internal *in)
 
     for (int n = 0; n < demux->num_streams; n++) {
         struct demux_stream *ds = demux->streams[n]->ds;
-        if (ds->total_read)
+        if (ds->total_read) {
             ds->refreshing = true;
+            ds->prev_pos = 0;
+            ds->prev_id = 0;
+        }
     }
 
     pthread_mutex_unlock(&in->lock);
