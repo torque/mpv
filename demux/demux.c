@@ -121,6 +121,9 @@ struct demux_internal {
     int seek_flags;             // flags for next seek (if seeking==true)
     double seek_pts;
 
+    bool refreshing;
+    bool blocked;
+
     // Cached state.
     bool force_cache_update;
     double time_length;
@@ -141,6 +144,7 @@ struct demux_stream {
     bool selected;          // user wants packets from this stream
     bool active;            // try to keep at least 1 packet queued
     bool eof;               // end of demuxed stream? (true if all buffer empty)
+    bool refreshing;
     size_t packs;           // number of packets in buffer
     size_t bytes;           // total bytes of packets in buffer
     double base_ts;         // timestamp of the last packet returned to decoder
@@ -148,6 +152,8 @@ struct demux_stream {
     double last_br_ts;      // timestamp of last packet bitrate was calculated
     size_t last_br_bytes;   // summed packet sizes since last bitrate calculation
     double bitrate;
+    int64_t total_read;
+    int64_t last_pos;
     struct demux_packet *head;
     struct demux_packet *tail;
 };
@@ -179,6 +185,8 @@ static void ds_flush(struct demux_stream *ds)
     ds->bitrate = -1;
     ds->eof = false;
     ds->active = false;
+    ds->total_read = 0;
+    ds->refreshing = false;
 }
 
 struct sh_stream *new_sh_stream(demuxer_t *demuxer, enum stream_type type)
@@ -297,7 +305,15 @@ int demux_add_packet(struct sh_stream *stream, demux_packet_t *dp)
     }
     struct demux_internal *in = ds->in;
     pthread_mutex_lock(&in->lock);
-    if (!ds->selected || in->seeking) {
+
+    bool drop = false;
+    if (ds->refreshing) {
+        drop = true;
+        if (dp->pos == ds->last_pos)
+            ds->refreshing = false;
+    }
+
+    if (!ds->selected || in->seeking || drop) {
         pthread_mutex_unlock(&in->lock);
         talloc_free(dp);
         return 0;
@@ -305,6 +321,9 @@ int demux_add_packet(struct sh_stream *stream, demux_packet_t *dp)
 
     dp->stream = stream->index;
     dp->next = NULL;
+
+    ds->total_read++;
+    ds->last_pos = dp->pos;
 
     ds->packs++;
     ds->bytes += dp->len;
@@ -346,6 +365,9 @@ int demux_add_packet(struct sh_stream *stream, demux_packet_t *dp)
 // Returns true if there was "progress" (lock was released temporarily).
 static bool read_packet(struct demux_internal *in)
 {
+    if (in->blocked)
+        return false;
+
     in->eof = false;
     in->idle = true;
 
@@ -464,6 +486,38 @@ static void execute_seek(struct demux_internal *in)
     pthread_mutex_lock(&in->lock);
 }
 
+static void execute_refresh(struct demux_internal *in)
+{
+    struct demuxer *demux = in->d_thread;
+
+    in->refreshing = false;
+
+    double start_ts = MP_NOPTS_VALUE;
+    for (int n = 0; n < demux->num_streams; n++) {
+        struct demux_stream *ds = demux->streams[n]->ds;
+        if (ds->type == STREAM_VIDEO || ds->type == STREAM_AUDIO)
+            start_ts = MP_PTS_MIN(start_ts, ds->base_ts);
+    }
+
+    if (start_ts == MP_NOPTS_VALUE)
+        return;
+
+    for (int n = 0; n < demux->num_streams; n++) {
+        struct demux_stream *ds = demux->streams[n]->ds;
+        if (ds->total_read)
+            ds->refreshing = true;
+    }
+
+    pthread_mutex_unlock(&in->lock);
+
+    if (in->d_thread->desc->seek) {
+        in->d_thread->desc->seek(in->d_thread, start_ts - 1.0, // arbitrary room
+                                 SEEK_ABSOLUTE | SEEK_BACKWARD | SEEK_SUBPREROLL);
+    }
+
+    pthread_mutex_lock(&in->lock);
+}
+
 static void *demux_thread(void *pctx)
 {
     struct demux_internal *in = pctx;
@@ -478,6 +532,10 @@ static void *demux_thread(void *pctx)
         }
         if (in->tracks_switched) {
             execute_trackswitch(in);
+            continue;
+        }
+        if (in->refreshing) {
+            execute_refresh(in);
             continue;
         }
         if (in->seeking) {
@@ -1019,6 +1077,9 @@ int demux_seek(demuxer_t *demuxer, double rel_seek_secs, int flags)
     pthread_mutex_lock(&in->lock);
 
     flush_locked(demuxer);
+
+    // Find the "base" timestamp, from which we should start
+
     in->seeking = true;
     in->seek_flags = flags;
     in->seek_pts = rel_seek_secs;
@@ -1030,6 +1091,26 @@ int demux_seek(demuxer_t *demuxer, double rel_seek_secs, int flags)
     pthread_mutex_unlock(&in->lock);
 
     return 1;
+}
+
+void demux_refresh_seek(struct demuxer *demuxer)
+{
+    struct demux_internal *in = demuxer->in;
+    pthread_mutex_lock(&in->lock);
+    if (in->threading) {
+        in->refreshing = true;
+        pthread_cond_signal(&in->wakeup);
+    }
+    pthread_mutex_unlock(&in->lock);
+}
+
+void demux_set_active(struct demuxer *demuxer, bool active)
+{
+    struct demux_internal *in = demuxer->in;
+    pthread_mutex_lock(&in->lock);
+    in->blocked = !active;
+    pthread_cond_signal(&in->wakeup);
+    pthread_mutex_unlock(&in->lock);
 }
 
 struct sh_stream *demuxer_stream_by_demuxer_id(struct demuxer *d,

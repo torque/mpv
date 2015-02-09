@@ -262,6 +262,8 @@ void demux_set_wakeup_cb(struct demuxer *demuxer, void (*cb)(void *ctx), void *c
 
 void demux_flush(struct demuxer *demuxer);
 int demux_seek(struct demuxer *demuxer, double rel_seek_secs, int flags);
+void demux_set_active(struct demuxer *demuxer, bool active);
+void demux_refresh_seek(struct demuxer *demuxer);
 
 int demux_control(struct demuxer *demuxer, int cmd, void *arg);
 

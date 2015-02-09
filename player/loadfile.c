@@ -548,6 +548,10 @@ void mp_switch_track_n(struct MPContext *mpctx, int order, enum stream_type type
     if (current)
         current->selected = false;
 
+    bool refresh = track && track->demuxer && track->demuxer == mpctx->demuxer;
+    if (refresh)
+        demux_set_active(mpctx->demuxer, false);
+
     reselect_demux_streams(mpctx);
 
     mpctx->current_track[order][type] = track;
@@ -556,6 +560,11 @@ void mp_switch_track_n(struct MPContext *mpctx, int order, enum stream_type type
         track->selected = true;
 
     reselect_demux_streams(mpctx);
+
+    if (refresh) {
+        demux_refresh_seek(mpctx->demuxer);
+        demux_set_active(mpctx->demuxer, true);
+    }
 
     if (type == STREAM_VIDEO && order == 0) {
         reinit_video_chain(mpctx);
