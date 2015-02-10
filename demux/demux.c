@@ -122,7 +122,8 @@ struct demux_internal {
     double seek_pts;
 
     bool refreshing;
-    bool blocked;
+    bool start_refresh_seek;
+    bool refresh_seeks_enabled;
 
     // Cached state.
     bool force_cache_update;
@@ -378,9 +379,6 @@ int demux_add_packet(struct sh_stream *stream, demux_packet_t *dp)
 // Returns true if there was "progress" (lock was released temporarily).
 static bool read_packet(struct demux_internal *in)
 {
-    if (in->blocked)
-        return false;
-
     in->eof = false;
     in->idle = true;
 
@@ -481,6 +479,9 @@ static void execute_trackswitch(struct demux_internal *in)
 
     if (in->d_thread->desc->control)
         in->d_thread->desc->control(in->d_thread, DEMUXER_CTRL_SWITCHED_TRACKS, 0);
+
+    if (in->start_refresh_seek && in->threading)
+        in->refreshing = true;
 
     pthread_mutex_lock(&in->lock);
 }
@@ -1109,23 +1110,15 @@ int demux_seek(demuxer_t *demuxer, double rel_seek_secs, int flags)
     return 1;
 }
 
-void demux_refresh_seek(struct demuxer *demuxer)
+// Enable doing a "refresh seek" on the next stream switch.
+// Note that this by design does not disable ongoing refresh seeks, and
+// does not affect previous stream switch commands (even if they were
+// asynchronous).
+void demux_set_enable_refresh_seeks(struct demuxer *demuxer, bool enabled)
 {
     struct demux_internal *in = demuxer->in;
     pthread_mutex_lock(&in->lock);
-    if (in->threading) {
-        in->refreshing = true;
-        pthread_cond_signal(&in->wakeup);
-    }
-    pthread_mutex_unlock(&in->lock);
-}
-
-void demux_set_active(struct demuxer *demuxer, bool active)
-{
-    struct demux_internal *in = demuxer->in;
-    pthread_mutex_lock(&in->lock);
-    in->blocked = !active;
-    pthread_cond_signal(&in->wakeup);
+    in->refresh_seeks_enabled = enabled;
     pthread_mutex_unlock(&in->lock);
 }
 
@@ -1155,16 +1148,19 @@ void demuxer_switch_track(struct demuxer *demuxer, enum stream_type type,
 void demuxer_select_track(struct demuxer *demuxer, struct sh_stream *stream,
                           bool selected)
 {
-    // don't flush buffers if stream is already selected / unselected
-    pthread_mutex_lock(&demuxer->in->lock);
+    struct demux_internal *in = demuxer->in;
+    pthread_mutex_lock(&in->lock);
     bool update = false;
+    // don't flush buffers if stream is already selected / unselected
     if (stream->ds->selected != selected) {
         stream->ds->selected = selected;
         stream->ds->active = false;
         ds_flush(stream->ds);
+        if (selected)
+            in->start_refresh_seek = in->refresh_seeks_enabled;
         update = true;
     }
-    pthread_mutex_unlock(&demuxer->in->lock);
+    pthread_mutex_unlock(&in->lock);
     if (update)
         demux_control(demuxer, DEMUXER_CTRL_SWITCHED_TRACKS, NULL);
 }
