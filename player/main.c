@@ -227,11 +227,6 @@ static int prepare_exit_cplayer(struct MPContext *mpctx, enum exit_reason how)
         rc = mpctx->quit_custom_rc;
 
     mp_destroy(mpctx);
-
-#if HAVE_COCOA_APPLICATION
-    // Note: this function never returns due to Cocoa calling exit(0)
-    terminate_cocoa_application();
-#endif
     return rc;
 }
 
