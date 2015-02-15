@@ -1732,41 +1732,71 @@ static size_t fbosurface_next(struct gl_video *p)
     return (p->surface_idx + 1) % FBOSURFACES_MAX;
 }
 
+static void gl_video_interpolation_prepare(struct gl_video *p,
+                                           struct frame_timing *t,
+                                           int64_t *prev_pts,
+                                           bool *is_new_frame,
+                                           struct fbotex *indirect_target)
+{
+    *prev_pts = p->surfaces[fbosurface_next(p)].pts;
+
+    if (!p->inter_program || !t || *prev_pts >= t->pts) {
+        *is_new_frame = false;
+        *indirect_target = p->indirect_fbo;
+        return;
+    }
+
+    // Running in interpolation mode and the frame is new, store it in the
+    // current fbosurface (which is the first one free).
+    MP_STATS(p, "new-pts");
+
+    p->surfaces[p->surface_idx].pts = t->pts;
+
+    *is_new_frame = true;
+    *indirect_target = p->surfaces[p->surface_idx].fbotex;
+}
+
 static void gl_video_interpolate_frame(struct gl_video *p,
                                        struct pass *chain,
-                                       struct frame_timing *t)
+                                       struct frame_timing *t,
+                                       int64_t prev_pts,
+                                       bool is_new_frame)
 {
     GL *gl = p->gl;
     double inter_coeff = 0.0;
-    int64_t prev_pts = p->surfaces[fbosurface_next(p)].pts;
-    p->is_interpolated = prev_pts < t->pts;
 
-    if (p->is_interpolated) {
-        MP_STATS(p, "new-pts");
-        // fbosurface 0 is already bound from the caller
-        p->surfaces[p->surface_idx].pts = t->pts;
+    if (is_new_frame) {
+        // fbosurface 0 will by bound by the handle_pass stuff, since it was
+        // the target of the previous handle_pass call (set by
+        // gl_video_interpolation_prepare)
         p->surface_idx = fbosurface_next(p);
         gl->ActiveTexture(GL_TEXTURE0 + 1);
         gl->BindTexture(p->gl_target, p->surfaces[p->surface_idx].fbotex.texture);
         gl->ActiveTexture(GL_TEXTURE0);
-        if (prev_pts < t->next_vsync && t->pts > t->next_vsync) {
-            double N = t->next_vsync - t->prev_vsync;
-            double P = t->pts - t->prev_vsync;
-            float ts = p->opts.smoothmotion_threshold;
-            inter_coeff = 1 - (N / P);
-            inter_coeff = inter_coeff < 0.0 + ts ? 0.0 : inter_coeff;
-            inter_coeff = inter_coeff > 1.0 - ts ? 1.0 : inter_coeff;
-            MP_DBG(p, "inter frame ppts: %lld, pts: %lld, "
-                   "vsync: %lld, mix: %f\n",
-                   (long long)prev_pts, (long long)t->pts,
-                   (long long)t->next_vsync, inter_coeff);
-            MP_STATS(p, "frame-mix");
+    }
 
-            // the value is scaled to fit in the graph with the completely
-            // unrelated "phase" value (which is stupid)
-            MP_STATS(p, "value-timed %lld %f mix-value",
-                     (long long)t->pts, inter_coeff * 10000);
-        }
+    if (p->opts.smoothmotion)
+        p->is_interpolated = prev_pts < t->next_vsync && t->pts > t->next_vsync;
+
+    if (p->is_interpolated) {
+        double N = t->next_vsync - t->prev_vsync;
+        double P = t->pts - t->prev_vsync;
+        float ts = p->opts.smoothmotion_threshold;
+        inter_coeff = 1 - (N / P);
+        inter_coeff = inter_coeff < 0.0 + ts ? 0.0 : inter_coeff;
+        inter_coeff = inter_coeff > 1.0 - ts ? 1.0 : inter_coeff;
+        MP_DBG(p, "interpolated frame ppts: %lld, pts: %lld, "
+               "vsync: %lld, mix: %f\n",
+               (long long)prev_pts, (long long)t->pts,
+               (long long)t->next_vsync, inter_coeff);
+        MP_STATS(p, "frame-mix");
+
+        // the value is scaled to fit in the graph with the completely
+        // unrelated "phase" value (which is stupid)
+        MP_STATS(p, "value-timed %lld %f mix-value",
+                 (long long)t->pts, inter_coeff * 10000);
+    } else {
+        MP_DBG(p, "normal frame - pts: %lld\n", (long long)t->pts);
     }
 
     gl->UseProgram(p->inter_program);
@@ -1824,18 +1854,15 @@ void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t)
         },
     };
 
-    int64_t prev_pts = p->surfaces[fbosurface_next(p)].pts;
-    struct fbotex *indirect_target;
-    if (p->inter_program && t && prev_pts < t->pts) {
-        indirect_target = &p->surfaces[p->surface_idx].fbotex;
-    } else {
-        indirect_target = &p->indirect_fbo;
-    }
+    struct fbotex indirect_target;
+    int64_t prev_pts;
+    bool is_new_frame;
+    gl_video_interpolation_prepare(p, t, &prev_pts, &is_new_frame, &indirect_target);
 
-    handle_pass(p, &chain, indirect_target, p->indirect_program);
+    handle_pass(p, &chain, &indirect_target, p->indirect_program);
 
     if (t && p->inter_program)
-        gl_video_interpolate_frame(p, &chain, t);
+        gl_video_interpolate_frame(p, &chain, t, prev_pts, is_new_frame);
 
     // Clip to visible height so that separate scaling scales the visible part
     // only (and the target FBO texture can have a bounded size).
