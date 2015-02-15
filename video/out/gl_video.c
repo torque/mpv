@@ -1769,6 +1769,7 @@ static void gl_video_interpolate_frame(struct gl_video *p,
         // fbosurface 0 will by bound by the handle_pass stuff, since it was
         // the target of the previous handle_pass call (set by
         // gl_video_interpolation_prepare)
+        // texture0 contains the new frame, texture1 the older frame
         p->surface_idx = fbosurface_next(p);
         gl->ActiveTexture(GL_TEXTURE0 + 1);
         gl->BindTexture(p->gl_target, p->surfaces[p->surface_idx].fbotex.texture);
