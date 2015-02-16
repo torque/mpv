@@ -351,6 +351,9 @@ const struct gl_video_opts gl_video_opts_hq_def = {
 static int validate_scaler_opt(struct mp_log *log, const m_option_t *opt,
                                struct bstr name, struct bstr param);
 
+#define MP_OPT_SMOOTHMOTION 1
+#define MP_OPT_BLURMOTION   2
+
 #define OPT_BASE_STRUCT struct gl_video_opts
 const struct m_sub_options gl_video_conf = {
     .opts = (const m_option_t[]) {
@@ -404,7 +407,10 @@ const struct m_sub_options gl_video_conf = {
                     {"blend", 2})),
         OPT_FLAG("rectangle-textures", use_rectangle, 0),
         OPT_COLOR("background", background, 0),
-        OPT_FLAG("smoothmotion", smoothmotion, 0),
+        OPT_CHOICE("smoothmotion", smoothmotion, M_OPT_OPTIONAL_PARAM,
+                   ({"no", 0},
+                    {"yes", 1}, {"", 1},
+                    {"blur", 2})),
         OPT_FLOAT("smoothmotion-threshold", smoothmotion_threshold,
                    CONF_RANGE, .min = 0, .max = 0.5),
         OPT_REMOVED("approx-gamma", "this is always enabled now"),
@@ -1743,6 +1749,11 @@ static void gl_video_interpolation_prepare(struct gl_video *p,
     if (!p->inter_program || !t || *prev_pts >= t->pts) {
         *is_new_frame = false;
         *indirect_target = p->indirect_fbo;
+
+
+        if (p->opts.smoothmotion == MP_OPT_BLURMOTION)
+            *prev_pts = p->surfaces[p->surface_idx].pts;
+
         return;
     }
 
@@ -1776,16 +1787,24 @@ static void gl_video_interpolate_frame(struct gl_video *p,
         gl->ActiveTexture(GL_TEXTURE0);
     }
 
-    if (p->opts.smoothmotion)
+    if (p->opts.smoothmotion == MP_OPT_SMOOTHMOTION) {
         p->is_interpolated = prev_pts < t->next_vsync && t->pts > t->next_vsync;
-
-    if (p->is_interpolated) {
         double N = t->next_vsync - t->prev_vsync;
         double P = t->pts - t->prev_vsync;
         float ts = p->opts.smoothmotion_threshold;
         inter_coeff = 1 - (N / P);
         inter_coeff = inter_coeff < 0.0 + ts ? 0.0 : inter_coeff;
         inter_coeff = inter_coeff > 1.0 - ts ? 1.0 : inter_coeff;
+    }
+
+    if (p->opts.smoothmotion == MP_OPT_BLURMOTION) {
+        p->is_interpolated = true;
+        double N = t->next_vsync - prev_pts;
+        double P = t->pts - prev_pts;
+        inter_coeff = 1 - (N / P);
+    }
+
+    if (p->is_interpolated) {
         MP_DBG(p, "interpolated frame ppts: %lld, pts: %lld, "
                "vsync: %lld, mix: %f\n",
                (long long)prev_pts, (long long)t->pts,
