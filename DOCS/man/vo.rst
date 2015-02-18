@@ -291,7 +291,6 @@ Available video output drivers are:
     the hardware decoder APIs.
 
     ``scale=<filter>``
-
         ``bilinear``
             Bilinear hardware texture filtering (fastest, very low quality).
             This is the default for compatibility reasons.
