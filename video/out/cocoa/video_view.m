@@ -21,11 +21,19 @@
 
 @implementation MpvVideoView
 @synthesize adapter = _adapter;
+@synthesize webView = _webView;
 
 - (id)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
         [self setAutoresizingMask:NSViewWidthSizable|NSViewHeightSizable];
+            [self setWantsLayer:YES];
+            self.webView = [[WebView alloc] initWithFrame:[self bounds]
+                                                frameName:@"mpvWebkitFrame"
+                                                groupName:@"mpvWebkitGroup"];
+            [self.webView setAutoresizingMask:NSViewWidthSizable|NSViewHeightSizable];
+            [self.webView setDrawsBackground:NO];
+            [self addSubview:self.webView];
     }
     return self;
 }

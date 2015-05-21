@@ -16,9 +16,12 @@
  */
 
 #import <Cocoa/Cocoa.h>
+#import <JavaScriptCore/JavaScriptCore.h>
+#import <WebKit/WebKit.h>
 #import "video/out/cocoa/mpvadapter.h"
 
 @interface MpvVideoView : NSView
 @property(nonatomic, retain) MpvCocoaAdapter *adapter;
+@property(nonatomic, retain) WebView *webView;
 - (NSRect)frameInPixels;
 @end

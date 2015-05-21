@@ -70,7 +70,7 @@ struct vo_cocoa_state {
 
     NSInteger window_level;
 
-    bool embedded; // wether we are embedding in another GUI
+    bool embedded; // whether we are embedding in another GUI
 
     atomic_bool waiting_frame;
 
