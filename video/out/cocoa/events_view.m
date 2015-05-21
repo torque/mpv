@@ -225,9 +225,8 @@
 {
     if ([self.adapter mouseEnabled]) {
         [self signalMouseMovement:event];
-    } else {
-        [super mouseMoved:event];
     }
+    [super mouseMoved:event];
 }
 
 - (void)mouseDragged:(NSEvent *)event
